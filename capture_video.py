@@ -2,26 +2,29 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
 
 TARGET_URL = os.getenv("TARGET_URL", "http://103.203.93.2/video-details/1744915")
+OUTPUT_TXT_FILE = Path("video_links.txt")  # রুট ডিরেক্টরিতে সেভ হবে
 
-# সাধারণ নন-ডিআরএম ভিডিও ও স্ট্রিমিং এক্সটেনশন/প্যাটার্ন
 VIDEO_EXTENSIONS_RE = re.compile(
     r"\.(mp4|mkv|m3u8|mpd|webm|flv|avi|mov|ts)(\?.*)?$",
     re.IGNORECASE,
 )
 
-# অনেক সময় প্লেয়ার লিংকে এক্সটেনশন না থাকলেও এই কিওয়ার্ডগুলো থাকে
-STREAM_HINTS_RE = re.compile(
-    r"(playlist\.m3u8|master\.m3u8|\.m3u8|\.mp4|\.mkv|video|stream)",
-    re.IGNORECASE,
-)
-
 def is_likely_video_url(url: str, content_type: str = "") -> bool:
     ct = (content_type or "").lower()
-    if any(k in ct for k in ["video/", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml"]):
+    if any(
+        k in ct
+        for k in [
+            "video/",
+            "application/vnd.apple.mpegurl",
+            "application/x-mpegurl",
+            "application/dash+xml",
+        ]
+    ):
         return True
     if VIDEO_EXTENSIONS_RE.search(url):
         return True
@@ -42,8 +45,8 @@ def capture_video_links(url: str) -> list[str]:
         )
         page = context.new_page()
 
-        def handle_request(route_or_req):
-            req_url = route_or_req.url
+        def handle_request(request):
+            req_url = request.url
             if VIDEO_EXTENSIONS_RE.search(req_url):
                 found_urls.add(req_url)
 
@@ -55,8 +58,10 @@ def capture_video_links(url: str) -> list[str]:
             if is_likely_video_url(resp_url, content_type):
                 found_urls.add(resp_url)
 
-            # JSON বা টেক্সট রেসপন্সের ভেতরে লুকানো লিংক খোঁজা
-            if any(t in content_type.lower() for t in ["application/json", "text/plain", "text/html"]):
+            if any(
+                t in content_type.lower()
+                for t in ["application/json", "text/plain", "text/html"]
+            ):
                 try:
                     body = response.text()
                     matches = re.findall(
@@ -77,7 +82,6 @@ def capture_video_links(url: str) -> list[str]:
         except Exception as e:
             print(f"[Warning] Page load timeout/issue: {e}", file=sys.stderr)
 
-        # প্লেয়ার লোড বা প্লে বাটন ক্লিক করার চেষ্টা
         try:
             play_selectors = [
                 "video",
@@ -94,10 +98,8 @@ def capture_video_links(url: str) -> list[str]:
         except Exception:
             pass
 
-        # ডাইনামিক রিকোয়েস্ট আসার জন্য কিছুক্ষণ অপেক্ষা
         page.wait_for_timeout(6000)
 
-        # DOM-এর <video> এবং <source> ট্যাগ চেক করা
         dom_sources = page.evaluate(
             """() => {
                 const results = [];
@@ -113,24 +115,34 @@ def capture_video_links(url: str) -> list[str]:
 
         for src in dom_sources:
             if src and not src.startswith("blob:"):
-                full_url = urljoin(url, src)
-                found_urls.add(full_url)
+                found_urls.add(urljoin(url, src))
 
         browser.close()
 
     return sorted(found_urls)
 
+def write_txt_file(links: list[str], filepath: Path) -> None:
+    # লিংক না পেলেও ফাইলটি তৈরি রাখবে যাতে পরবর্তী ধাপ না আটকায়
+    content = "\n".join(links) + ("\n" if links else "")
+    filepath.write_text(content, encoding="utf-8")
+    print(f"Saved {len(links)} link(s) to {filepath.resolve()}")
+
 def main():
     links = capture_video_links(TARGET_URL)
-    output = {
-        "target_url": TARGET_URL,
-        "count": len(links),
-        "video_links": links,
-    }
-    print(json.dumps(output, indent=2, ensure_ascii=False))
+    write_txt_file(links, OUTPUT_TXT_FILE)
 
-    with open("captured_links.json", "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+    print(
+        json.dumps(
+            {
+                "target_url": TARGET_URL,
+                "output_file": str(OUTPUT_TXT_FILE),
+                "count": len(links),
+                "video_links": links,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
 
 if __name__ == "__main__":
     main()
