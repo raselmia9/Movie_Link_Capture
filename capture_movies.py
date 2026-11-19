@@ -15,7 +15,7 @@ SOURCE_JSON_URL = os.getenv(
 )
 OUTPUT_JSON_FILE = Path(os.getenv("OUTPUT_JSON_FILE", "output_movies.json"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "10"))
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "0"))  # 0 মানে সব নতুন আইটেম
+MAX_ITEMS = int(os.getenv("MAX_ITEMS", "30"))  # পরীক্ষামূলকভাবে ডিফল্ট ৩০টি আইটেম
 CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "true").lower() == "true"
 
 VIDEO_EXTENSIONS = (
@@ -107,12 +107,11 @@ def check_http_200(url: str, referer: str) -> bool:
             "Chrome/124.0.0.0 Safari/537.36"
         ),
         "Referer": referer,
-        "Range": "bytes=0-1024",
     }
-    for method in ("GET", "HEAD"):
+    for method in ("HEAD", "GET"):
         try:
             req = urllib.request.Request(url, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 code = getattr(resp, "status", None) or resp.getcode()
                 if code == 200:
                     return True
@@ -131,7 +130,6 @@ def format_details_text(meta: dict[str, str]) -> str:
 
 
 def format_links_field(entries: list[tuple[str, str]]) -> str:
-    # entries: [(label, formatted_url_with_referer), ...]
     if not entries:
         return ""
     if len(entries) == 1 and not entries[0][0]:
@@ -150,7 +148,6 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
     img_url = item["thumbnail"]
     date_val = item["published_date"]
 
-    # url -> referer
     captured_map: dict[str, str] = {}
     labeled_entries: list[tuple[str, str]] = []
 
@@ -199,9 +196,9 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
     extracted_labeled_raw: list[tuple[str, str]] = []
 
     try:
-        await page.goto(detail_url, wait_until="domcontentloaded", timeout=35000)
+        await page.goto(detail_url, wait_until="domcontentloaded", timeout=25000)
         try:
-            await page.wait_for_load_state("networkidle", timeout=10000)
+            await page.wait_for_load_state("networkidle", timeout=7000)
         except Exception:
             pass
 
@@ -220,7 +217,7 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
             except Exception:
                 pass
 
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(2000)
 
         dom_data = await page.evaluate(
             """() => {
@@ -350,7 +347,10 @@ async def main():
             async with semaphore:
                 rec = await capture_item(context, item)
                 new_records.append(rec)
-                print(f"[{index}/{len(pending)}] Done: {rec['title']}")
+                print(
+                    f"[{index}/{len(pending)}] {rec['title']} -> "
+                    f"{'OK' if rec['link'] else 'EMPTY'}"
+                )
 
         await asyncio.gather(
             *(asyncio.create_task(worker(i + 1, it)) for i, it in enumerate(pending))
