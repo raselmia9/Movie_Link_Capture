@@ -1,17 +1,21 @@
-name: Capture Video Stream Link
+name: Capture Movies & Stream Links
 
 on:
   workflow_dispatch:
     inputs:
-      target_url:
-        description: "Video details page URL"
+      concurrency:
+        description: "Concurrent browser tabs/pages"
         required: false
-        default: "http://103.203.93.2/video-details/1744915"
+        default: "10"
+      max_items:
+        description: "Max new items per run (0 = all)"
+        required: false
+        default: "0"
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 3 * * *"
 
 permissions:
-  contents: write  # রিপোজিটরিতে video_links.txt পুশ করার জন্য প্রয়োজন
+  contents: write
 
 jobs:
   capture:
@@ -26,34 +30,30 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Playwright and Chromium
         run: |
           python -m pip install --upgrade pip
           pip install playwright
           playwright install --with-deps chromium
 
-      - name: Run video link capture script
+      - name: Run capture script
         env:
-          TARGET_URL: ${{ inputs.target_url || 'http://103.203.93.2/video-details/1744915' }}
+          SOURCE_JSON_URL: "https://raw.githubusercontent.com/raselmia9/Movie-Scraper/refs/heads/main/movies.json"
+          OUTPUT_JSON_FILE: "output_movies.json"
+          CONCURRENCY: ${{ inputs.concurrency || '10' }}
+          MAX_ITEMS: ${{ inputs.max_items || '0' }}
+          CHECK_STATUS_200: "true"
         run: |
-          python capture_video.py
-          ls -la video_links.txt
+          python capture_movies.py
 
-      - name: Upload video_links.txt artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: captured-video-links-txt
-          path: video_links.txt
-          if-no-files-found: error
-
-      - name: Commit and push video_links.txt to root
+      - name: Commit and push updated JSON
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add video_links.txt
+          git add output_movies.json
           if ! git diff --staged --quiet; then
-            git commit -m "Update captured video links in video_links.txt"
+            git commit -m "Update output_movies.json"
             git push
           else
-            echo "No changes in video_links.txt"
+            echo "No changes to commit."
           fi
