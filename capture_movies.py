@@ -41,32 +41,6 @@ VIDEO_CONTENT_TYPES = (
 )
 
 
-def strip_referer(raw_link: str) -> str:
-    return raw_link.split("|Referer=", 1)[0].strip()
-
-
-def extract_existing_links(records: list[dict[str, Any]]) -> set[str]:
-    existing_urls: set[str] = set()
-    for rec in records:
-        if not isinstance(rec, dict):
-            continue
-        link_field = str(rec.get("link") or "").strip()
-        if not link_field:
-            continue
-        for part in link_field.split(")"):
-            if ",," in part:
-                _, url_part = part.split(",,", 1)
-                clean = strip_referer(url_part)
-                if clean:
-                    existing_urls.add(clean)
-            else:
-                for token in part.split():
-                    clean = strip_referer(token)
-                    if clean.startswith(("http://", "https://")):
-                        existing_urls.add(clean)
-    return existing_urls
-
-
 def load_source_movies(url: str) -> list[dict[str, str]]:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -97,18 +71,16 @@ def load_source_movies(url: str) -> list[dict[str, str]]:
     return items
 
 
-def load_existing_output(filepath: Path) -> tuple[list[dict[str, Any]], set[str]]:
+def load_existing_output(filepath: Path) -> list[dict[str, Any]]:
     if not filepath.exists():
-        return [], set()
+        return []
 
     try:
         data = json.loads(filepath.read_text(encoding="utf-8"))
     except Exception:
-        return [], set()
+        return []
 
-    records = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
-    seen_links = extract_existing_links(records)
-    return records, seen_links
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
 
 
 def is_video_response(url: str, content_type: str) -> bool:
@@ -163,9 +135,7 @@ def format_links_field(entries: list[tuple[str, str]]) -> str:
     return ")".join(parts)
 
 
-async def capture_item(
-    context, item: dict[str, str], seen_links: set[str]
-) -> dict[str, Any]:
+async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
     title = item["title"]
     detail_url = item["detail_url"]
     img_url = item["thumbnail"]
@@ -302,13 +272,10 @@ async def capture_item(
 
     verified_urls: dict[str, str] = {}
     for u, ref in captured_map.items():
-        if u in seen_links:
-            continue
         if CHECK_STATUS_200:
             ok = await asyncio.to_thread(check_http_200, u, ref)
             if not ok:
                 continue
-        seen_links.add(u)
         verified_urls[u] = f"{u}|Referer={ref}"
 
     labeled_entries: list[tuple[str, str]] = []
@@ -335,14 +302,37 @@ async def capture_item(
 
 async def main():
     source_items = await asyncio.to_thread(load_source_movies, SOURCE_JSON_URL)
-    existing_records, seen_links = load_existing_output(OUTPUT_JSON_FILE)
+    existing_records = load_existing_output(OUTPUT_JSON_FILE)
 
-    pending = source_items[:MAX_ITEMS] if MAX_ITEMS > 0 else source_items
+    existing_by_title: dict[str, int] = {}
+    for idx, rec in enumerate(existing_records):
+        t = str(rec.get("title") or "")
+        if t and t not in existing_by_title:
+            existing_by_title[t] = idx
+
+    to_capture: list[tuple[dict[str, str], int | None]] = []
+    skipped = 0
+
+    for item in source_items:
+        title = item["title"]
+        if title in existing_by_title:
+            rec_idx = existing_by_title[title]
+            existing_link = str(existing_records[rec_idx].get("link") or "").strip()
+            if existing_link == "":
+                to_capture.append((item, rec_idx))
+            else:
+                skipped += 1
+        else:
+            to_capture.append((item, None))
+
+    if MAX_ITEMS > 0:
+        to_capture = to_capture[:MAX_ITEMS]
+
     print(
-        f"Source: {len(source_items)} | Queued: {len(pending)} | Known links: {len(seen_links)}"
+        f"Source: {len(source_items)} | Skipped (has link): {skipped} | Queued: {len(to_capture)}"
     )
 
-    if not pending:
+    if not to_capture:
         print("No items to process.")
         return
 
@@ -360,21 +350,33 @@ async def main():
             ignore_https_errors=True,
         )
 
-        async def worker(index: int, item: dict[str, str]):
+        async def worker(index: int, item: dict[str, str], rec_idx: int | None):
             async with semaphore:
-                rec = await capture_item(context, item, seen_links)
-                new_records.append(rec)
+                rec = await capture_item(context, item)
+                if rec_idx is not None:
+                    if rec["link"]:
+                        existing_records[rec_idx]["link"] = rec["link"]
+                        if rec["details"]:
+                            existing_records[rec_idx]["details"] = rec["details"]
+                else:
+                    new_records.append(rec)
                 print(
-                    f"[{index}/{len(pending)}] {rec['title']} -> "
+                    f"[{index}/{len(to_capture)}] {rec['title']} -> "
                     f"{'OK' if rec['link'] else 'EMPTY'}"
                 )
 
         await asyncio.gather(
-            *(asyncio.create_task(worker(i + 1, it)) for i, it in enumerate(pending))
+            *(
+                asyncio.create_task(worker(i + 1, it, r_idx))
+                for i, (it, r_idx) in enumerate(to_capture)
+            )
         )
         await browser.close()
 
     final_records = new_records + existing_records
+    for idx, rec in enumerate(final_records, start=1):
+        rec["item_number"] = idx
+
     OUTPUT_JSON_FILE.write_text(
         json.dumps(final_records, indent=2, ensure_ascii=False),
         encoding="utf-8",
