@@ -16,7 +16,6 @@ SOURCE_JSON_URL = os.getenv(
 OUTPUT_JSON_FILE = Path(os.getenv("OUTPUT_JSON_FILE", "output_movies.json"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "60"))
 MAX_ITEMS = int(os.getenv("MAX_ITEMS", "300"))
-CAPTURE_TIMEOUT = float(os.getenv("CAPTURE_TIMEOUT", "25"))
 CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "false").lower() == "true"
 
 VIDEO_EXTENSIONS = (
@@ -136,7 +135,7 @@ def format_links_field(entries: list[tuple[str, str]]) -> str:
     return ")".join(parts)
 
 
-async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
+async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
     title = item["title"]
     detail_url = item["detail_url"]
     img_url = item["thumbnail"]
@@ -172,12 +171,19 @@ async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
         if is_video_response(resp_url, content_type):
             record_url(resp_url, frame_ref)
 
-        if any(k in content_type.lower() for k in ("application/json", "text/plain")):
+        if any(
+            k in content_type.lower()
+            for k in (
+                "application/json",
+                "text/plain",
+                "text/html",
+                "application/javascript",
+            )
+        ):
             try:
                 body = await response.text()
-                if len(body) <= 500000:
-                    for match in URL_EXTRACT_RE.findall(body):
-                        record_url(match, frame_ref)
+                for match in URL_EXTRACT_RE.findall(body):
+                    record_url(match, frame_ref)
             except Exception:
                 pass
 
@@ -187,7 +193,7 @@ async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
     page_meta: dict[str, str] = {}
 
     try:
-        await page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
+        await page.goto(detail_url, wait_until="networkidle", timeout=45000)
     except Exception as e:
         print(f"[Warning] Page load timeout/issue ({title}): {e}", file=sys.stderr)
 
@@ -202,12 +208,12 @@ async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
             try:
                 loc = page.locator(sel).first
                 if await loc.count() > 0 and await loc.is_visible():
-                    await loc.click(timeout=1500)
+                    await loc.click(timeout=2000)
                     break
             except Exception:
                 pass
 
-        await page.wait_for_timeout(2500)
+        await page.wait_for_timeout(6000)
 
         dom_data = await page.evaluate(
             """() => {
@@ -294,29 +300,11 @@ async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
     }
 
 
-async def capture_item(context, item: dict[str, str]) -> dict[str, Any] | None:
-    try:
-        result = await asyncio.wait_for(
-            _run_capture_on_page(context, item),
-            timeout=CAPTURE_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        print(f"[Timeout] Skipped after {CAPTURE_TIMEOUT}s: {item['title']}")
-        return None
-    except Exception as e:
-        print(f"[Error] Skipped ({item['title']}): {e}", file=sys.stderr)
-        return None
-
-    if not result or not str(result.get("link") or "").strip():
-        return None
-
-    return result
-
-
 async def main():
     source_items = await asyncio.to_thread(load_source_movies, SOURCE_JSON_URL)
     existing_records = load_existing_output(OUTPUT_JSON_FILE)
 
+    # আউটপুট লিস্টে থাকা টাইটেল অনুযায়ী ইন্ডেক্স তৈরি (সম্পূর্ণ টাইটেল মিলিয়ে)
     existing_by_title: dict[str, int] = {}
     for idx, rec in enumerate(existing_records):
         t = str(rec.get("title") or "")
@@ -324,12 +312,9 @@ async def main():
             existing_by_title[t] = idx
 
     to_capture: list[tuple[dict[str, str], int | None]] = []
-    skipped_existing = 0
+    skipped = 0
 
     for item in source_items:
-        if MAX_ITEMS > 0 and len(to_capture) >= MAX_ITEMS:
-            break
-
         title = item["title"]
         if title in existing_by_title:
             rec_idx = existing_by_title[title]
@@ -337,12 +322,15 @@ async def main():
             if existing_link == "":
                 to_capture.append((item, rec_idx))
             else:
-                skipped_existing += 1
+                skipped += 1
         else:
             to_capture.append((item, None))
 
+    if MAX_ITEMS > 0:
+        to_capture = to_capture[:MAX_ITEMS]
+
     print(
-        f"Source: {len(source_items)} | Skipped (has link): {skipped_existing} | Selected to capture: {len(to_capture)} | Tabs: {CONCURRENCY} | Timeout: {CAPTURE_TIMEOUT}s"
+        f"Source: {len(source_items)} | Skipped (has link): {skipped} | Queued: {len(to_capture)}"
     )
 
     if not to_capture:
@@ -350,8 +338,8 @@ async def main():
         return
 
     semaphore = asyncio.Semaphore(CONCURRENCY)
+    updated_existing_indices: set[int] = set()
     new_records: list[dict[str, Any]] = []
-    skipped_no_link = 0
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -365,21 +353,20 @@ async def main():
         )
 
         async def worker(index: int, item: dict[str, str], rec_idx: int | None):
-            nonlocal skipped_no_link
             async with semaphore:
                 rec = await capture_item(context, item)
-                if not rec:
-                    skipped_no_link += 1
-                    print(f"[{index}/{len(to_capture)}] {item['title']} -> SKIPPED (no link in time)")
-                    return
-
                 if rec_idx is not None:
-                    existing_records[rec_idx]["link"] = rec["link"]
-                    if rec["details"]:
-                        existing_records[rec_idx]["details"] = rec["details"]
+                    if rec["link"]:
+                        existing_records[rec_idx]["link"] = rec["link"]
+                        if rec["details"]:
+                            existing_records[rec_idx]["details"] = rec["details"]
+                        updated_existing_indices.add(rec_idx)
                 else:
                     new_records.append(rec)
-                print(f"[{index}/{len(to_capture)}] {rec['title']} -> OK")
+                print(
+                    f"[{index}/{len(to_capture)}] {rec['title']} -> "
+                    f"{'OK' if rec['link'] else 'EMPTY'}"
+                )
 
         await asyncio.gather(
             *(
@@ -389,17 +376,13 @@ async def main():
         )
         await browser.close()
 
+    # নতুন ক্যাপচার হওয়া রেকর্ডগুলো লিস্টের একদম শুরুতে রাখা হয়েছে
     final_records = new_records + existing_records
-    for idx, rec in enumerate(final_records, start=1):
-        rec["item_number"] = idx
-
     OUTPUT_JSON_FILE.write_text(
         json.dumps(final_records, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    print(
-        f"Saved {len(final_records)} items to {OUTPUT_JSON_FILE} | Skipped (no link/timeout): {skipped_no_link}"
-    )
+    print(f"Saved {len(final_records)} items to {OUTPUT_JSON_FILE}")
 
 
 if __name__ == "__main__":
