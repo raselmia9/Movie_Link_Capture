@@ -8,12 +8,13 @@ on:
         required: false
         default: "http://103.203.93.2/video-details/1744915"
   schedule:
-    # প্রয়োজনে শিডিউল রাখতে পারেন, নতুবা workflow_dispatch দিয়ে ম্যানুয়ালি চালান
     - cron: "0 */6 * * *"
+
+permissions:
+  contents: write  # রিপোজিটরিতে video_links.txt পুশ করার জন্য প্রয়োজন
 
 jobs:
   capture:
-    # লোকাল/প্রাইভেট নেটওয়ার্ক হলে নিজের মেশিনের রানার ব্যবহার করতে 'self-hosted' দিন
     runs-on: ubuntu-latest
 
     steps:
@@ -36,10 +37,23 @@ jobs:
           TARGET_URL: ${{ inputs.target_url || 'http://103.203.93.2/video-details/1744915' }}
         run: |
           python capture_video.py
+          ls -la video_links.txt
 
-      - name: Upload captured links artifact
+      - name: Upload video_links.txt artifact
         uses: actions/upload-artifact@v4
         with:
-          name: captured-video-links
-          path: captured_links.json
-          if-no-files-found: warn
+          name: captured-video-links-txt
+          path: video_links.txt
+          if-no-files-found: error
+
+      - name: Commit and push video_links.txt to root
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add video_links.txt
+          if ! git diff --staged --quiet; then
+            git commit -m "Update captured video links in video_links.txt"
+            git push
+          else
+            echo "No changes in video_links.txt"
+          fi
