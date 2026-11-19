@@ -1,0 +1,45 @@
+name: Capture Video Stream Link
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Video details page URL"
+        required: false
+        default: "http://103.203.93.2/video-details/1744915"
+  schedule:
+    # প্রয়োজনে শিডিউল রাখতে পারেন, নতুবা workflow_dispatch দিয়ে ম্যানুয়ালি চালান
+    - cron: "0 */6 * * *"
+
+jobs:
+  capture:
+    # লোকাল/প্রাইভেট নেটওয়ার্ক হলে নিজের মেশিনের রানার ব্যবহার করতে 'self-hosted' দিন
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Run video link capture script
+        env:
+          TARGET_URL: ${{ inputs.target_url || 'http://103.203.93.2/video-details/1744915' }}
+        run: |
+          python capture_video.py
+
+      - name: Upload captured links artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: captured-video-links
+          path: captured_links.json
+          if-no-files-found: warn
