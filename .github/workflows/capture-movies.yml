@@ -1,4 +1,4 @@
-name: Capture Movies & Stream Links
+name: Capture Movies & Stream Links (Test 30)
 
 on:
   workflow_dispatch:
@@ -8,9 +8,9 @@ on:
         required: false
         default: "10"
       max_items:
-        description: "Max new items per run (0 = all)"
+        description: "Max new items per run (default 30 for test)"
         required: false
-        default: "0"
+        default: "30"
   schedule:
     - cron: "0 3 * * *"
 
@@ -41,7 +41,7 @@ jobs:
           SOURCE_JSON_URL: "https://raw.githubusercontent.com/raselmia9/Movie-Scraper/refs/heads/main/movies.json"
           OUTPUT_JSON_FILE: "output_movies.json"
           CONCURRENCY: ${{ inputs.concurrency || '10' }}
-          MAX_ITEMS: ${{ inputs.max_items || '0' }}
+          MAX_ITEMS: ${{ inputs.max_items || '30' }}
           CHECK_STATUS_200: "true"
         run: |
           python capture_movies.py
@@ -52,7 +52,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add output_movies.json
           if ! git diff --staged --quiet; then
-            git commit -m "Update output_movies.json"
+            git commit -m "Test capture for 30 items"
             git push
           else
             echo "No changes to commit."
