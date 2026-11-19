@@ -14,8 +14,8 @@ SOURCE_JSON_URL = os.getenv(
     "https://raw.githubusercontent.com/raselmia9/Movie-Scraper/refs/heads/main/movies.json",
 )
 OUTPUT_JSON_FILE = Path(os.getenv("OUTPUT_JSON_FILE", "output_movies.json"))
-CONCURRENCY = int(os.getenv("CONCURRENCY", "60"))
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "300"))
+CONCURRENCY = int(os.getenv("CONCURRENCY", "10"))
+MAX_ITEMS = int(os.getenv("MAX_ITEMS", "30"))
 CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "false").lower() == "true"
 
 VIDEO_EXTENSIONS = (
@@ -304,7 +304,7 @@ async def main():
     source_items = await asyncio.to_thread(load_source_movies, SOURCE_JSON_URL)
     existing_records = load_existing_output(OUTPUT_JSON_FILE)
 
-    # আউটপুট লিস্টে থাকা টাইটেল অনুযায়ী ইন্ডেক্স তৈরি (সম্পূর্ণ টাইটেল মিলিয়ে)
+    # আউটপুট লিস্টে টাইটেল অনুযায়ী ইন্ডেক্স ম্যাপ
     existing_by_title: dict[str, int] = {}
     for idx, rec in enumerate(existing_records):
         t = str(rec.get("title") or "")
@@ -314,15 +314,16 @@ async def main():
     to_capture: list[tuple[dict[str, str], int | None]] = []
     skipped = 0
 
+    # ওয়েবসাইটে যাওয়ার আগেই টাইটেল মিলিয়ে দেখা হচ্ছে আউটপুট লিস্টে লিংক আছে কি না
     for item in source_items:
         title = item["title"]
         if title in existing_by_title:
             rec_idx = existing_by_title[title]
-            existing_link = str(existing_records[rec_idx].get("link") or "").strip()
-            if existing_link == "":
-                to_capture.append((item, rec_idx))
-            else:
+            has_video_link = bool(str(existing_records[rec_idx].get("link") or "").strip())
+            if has_video_link:
                 skipped += 1
+            else:
+                to_capture.append((item, rec_idx))
         else:
             to_capture.append((item, None))
 
@@ -338,7 +339,6 @@ async def main():
         return
 
     semaphore = asyncio.Semaphore(CONCURRENCY)
-    updated_existing_indices: set[int] = set()
     new_records: list[dict[str, Any]] = []
 
     async with async_playwright() as p:
@@ -360,7 +360,6 @@ async def main():
                         existing_records[rec_idx]["link"] = rec["link"]
                         if rec["details"]:
                             existing_records[rec_idx]["details"] = rec["details"]
-                        updated_existing_indices.add(rec_idx)
                 else:
                     new_records.append(rec)
                 print(
@@ -376,8 +375,10 @@ async def main():
         )
         await browser.close()
 
-    # নতুন ক্যাপচার হওয়া রেকর্ডগুলো লিস্টের একদম শুরুতে রাখা হয়েছে
     final_records = new_records + existing_records
+    for idx, rec in enumerate(final_records, start=1):
+        rec["item_number"] = idx
+
     OUTPUT_JSON_FILE.write_text(
         json.dumps(final_records, indent=2, ensure_ascii=False),
         encoding="utf-8",
