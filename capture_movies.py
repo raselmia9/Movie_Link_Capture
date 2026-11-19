@@ -14,8 +14,8 @@ SOURCE_JSON_URL = os.getenv(
     "https://raw.githubusercontent.com/raselmia9/Movie-Scraper/refs/heads/main/movies.json",
 )
 OUTPUT_JSON_FILE = Path(os.getenv("OUTPUT_JSON_FILE", "output_movies.json"))
-CONCURRENCY = int(os.getenv("CONCURRENCY", "10"))
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "30"))
+CONCURRENCY = int(os.getenv("CONCURRENCY", "60"))
+MAX_ITEMS = int(os.getenv("MAX_ITEMS", "300"))
 CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "false").lower() == "true"
 
 VIDEO_EXTENSIONS = (
