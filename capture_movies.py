@@ -15,7 +15,7 @@ SOURCE_JSON_URL = os.getenv(
 )
 OUTPUT_JSON_FILE = Path(os.getenv("OUTPUT_JSON_FILE", "output_movies.json"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "10"))
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "30"))  # পরীক্ষামূলকভাবে ডিফল্ট ৩০টি আইটেম
+MAX_ITEMS = int(os.getenv("MAX_ITEMS", "30"))
 CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "true").lower() == "true"
 
 VIDEO_EXTENSIONS = (
@@ -41,8 +41,35 @@ VIDEO_CONTENT_TYPES = (
 )
 
 
-def normalize_title(title: str) -> str:
-    return re.sub(r"\s+", " ", (title or "").strip().lower())
+def strip_referer(raw_link: str) -> str:
+    return raw_link.split("|Referer=", 1)[0].strip()
+
+
+def extract_existing_links(records: list[dict[str, Any]]) -> set[str]:
+    existing_urls: set[str] = set()
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        src_url = str(rec.get("source_url") or "").strip()
+        if src_url:
+            existing_urls.add(src_url)
+
+        link_field = str(rec.get("link") or "").strip()
+        if not link_field:
+            continue
+
+        for part in link_field.split(")"):
+            if ",," in part:
+                _, url_part = part.split(",,", 1)
+                clean = strip_referer(url_part)
+                if clean:
+                    existing_urls.add(clean)
+            else:
+                for token in part.split():
+                    clean = strip_referer(token)
+                    if clean.startswith(("http://", "https://")):
+                        existing_urls.add(clean)
+    return existing_urls
 
 
 def load_source_movies(url: str) -> list[dict[str, str]]:
@@ -50,7 +77,11 @@ def load_source_movies(url: str) -> list[dict[str, str]]:
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = json.loads(resp.read().decode("utf-8"))
 
-    movie_list = raw.get("movies", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+    movie_list = (
+        raw.get("movies", [])
+        if isinstance(raw, dict)
+        else (raw if isinstance(raw, list) else [])
+    )
     items: list[dict[str, str]] = []
 
     for row in movie_list:
@@ -80,14 +111,9 @@ def load_existing_output(filepath: Path) -> tuple[list[dict[str, Any]], set[str]
     except Exception:
         return [], set()
 
-    records = data if isinstance(data, list) else []
-    valid_records = [r for r in records if isinstance(r, dict)]
-    seen = {
-        normalize_title(str(r.get("title") or ""))
-        for r in valid_records
-        if normalize_title(str(r.get("title") or ""))
-    }
-    return valid_records, seen
+    records = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+    seen_links = extract_existing_links(records)
+    return records, seen_links
 
 
 def is_video_response(url: str, content_type: str) -> bool:
@@ -142,14 +168,16 @@ def format_links_field(entries: list[tuple[str, str]]) -> str:
     return ")".join(parts)
 
 
-async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
+async def capture_item(
+    context, item: dict[str, str], seen_links: set[str]
+) -> dict[str, Any]:
     title = item["title"]
     detail_url = item["detail_url"]
     img_url = item["thumbnail"]
     date_val = item["published_date"]
 
     captured_map: dict[str, str] = {}
-    labeled_entries: list[tuple[str, str]] = []
+    extracted_labeled_raw: list[tuple[str, str]] = []
 
     page = await context.new_page()
 
@@ -180,7 +208,12 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
 
         if any(
             k in content_type.lower()
-            for k in ("application/json", "text/plain", "text/html", "application/javascript")
+            for k in (
+                "application/json",
+                "text/plain",
+                "text/html",
+                "application/javascript",
+            )
         ):
             try:
                 body = await response.text()
@@ -193,7 +226,6 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
     page.on("response", on_response)
 
     page_meta: dict[str, str] = {}
-    extracted_labeled_raw: list[tuple[str, str]] = []
 
     try:
         await page.goto(detail_url, wait_until="domcontentloaded", timeout=25000)
@@ -276,12 +308,16 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
 
     verified_urls: dict[str, str] = {}
     for u, ref in captured_map.items():
+        if u in seen_links:
+            continue
         if CHECK_STATUS_200:
             ok = await asyncio.to_thread(check_http_200, u, ref)
             if not ok:
                 continue
+        seen_links.add(u)
         verified_urls[u] = f"{u}|Referer={ref}"
 
+    labeled_entries: list[tuple[str, str]] = []
     if extracted_labeled_raw:
         for lbl, raw_u in extracted_labeled_raw:
             if raw_u in verified_urls:
@@ -300,33 +336,19 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
         "img": img_url,
         "date": date_val,
         "link": format_links_field(labeled_entries),
+        "source_url": detail_url,
     }
 
 
 async def main():
     source_items = await asyncio.to_thread(load_source_movies, SOURCE_JSON_URL)
-    existing_records, seen_titles = load_existing_output(OUTPUT_JSON_FILE)
+    existing_records, seen_links = load_existing_output(OUTPUT_JSON_FILE)
 
-    pending: list[dict[str, str]] = []
-    skipped = 0
-
-    for item in source_items:
-        norm = normalize_title(item["title"])
-        if norm in seen_titles:
-            skipped += 1
-            continue
-        seen_titles.add(norm)
-        pending.append(item)
-
-    if MAX_ITEMS > 0:
-        pending = pending[:MAX_ITEMS]
-
-    print(
-        f"Source: {len(source_items)} | Skipped: {skipped} | Queued: {len(pending)}"
-    )
+    pending = source_items[:MAX_ITEMS] if MAX_ITEMS > 0 else source_items
+    print(f"Source: {len(source_items)} | Queued: {len(pending)} | Known links: {len(seen_links)}")
 
     if not pending:
-        print("No new items to process.")
+        print("No items to process.")
         return
 
     semaphore = asyncio.Semaphore(CONCURRENCY)
@@ -345,7 +367,7 @@ async def main():
 
         async def worker(index: int, item: dict[str, str]):
             async with semaphore:
-                rec = await capture_item(context, item)
+                rec = await capture_item(context, item, seen_links)
                 new_records.append(rec)
                 print(
                     f"[{index}/{len(pending)}] {rec['title']} -> "
