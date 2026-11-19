@@ -16,7 +16,7 @@ SOURCE_JSON_URL = os.getenv(
 OUTPUT_JSON_FILE = Path(os.getenv("OUTPUT_JSON_FILE", "output_movies.json"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "60"))
 MAX_ITEMS = int(os.getenv("MAX_ITEMS", "300"))
-CAPTURE_TIMEOUT = float(os.getenv("CAPTURE_TIMEOUT", "20"))
+CAPTURE_TIMEOUT = float(os.getenv("CAPTURE_TIMEOUT", "25"))
 CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "false").lower() == "true"
 
 VIDEO_EXTENSIONS = (
@@ -172,19 +172,12 @@ async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
         if is_video_response(resp_url, content_type):
             record_url(resp_url, frame_ref)
 
-        if any(
-            k in content_type.lower()
-            for k in (
-                "application/json",
-                "text/plain",
-                "text/html",
-                "application/javascript",
-            )
-        ):
+        if any(k in content_type.lower() for k in ("application/json", "text/plain")):
             try:
                 body = await response.text()
-                for match in URL_EXTRACT_RE.findall(body):
-                    record_url(match, frame_ref)
+                if len(body) <= 500000:
+                    for match in URL_EXTRACT_RE.findall(body):
+                        record_url(match, frame_ref)
             except Exception:
                 pass
 
@@ -194,7 +187,7 @@ async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
     page_meta: dict[str, str] = {}
 
     try:
-        await page.goto(detail_url, wait_until="networkidle", timeout=45000)
+        await page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
     except Exception as e:
         print(f"[Warning] Page load timeout/issue ({title}): {e}", file=sys.stderr)
 
@@ -209,12 +202,12 @@ async def _run_capture_on_page(context, item: dict[str, str]) -> dict[str, Any]:
             try:
                 loc = page.locator(sel).first
                 if await loc.count() > 0 and await loc.is_visible():
-                    await loc.click(timeout=2000)
+                    await loc.click(timeout=1500)
                     break
             except Exception:
                 pass
 
-        await page.wait_for_timeout(6000)
+        await page.wait_for_timeout(2500)
 
         dom_data = await page.evaluate(
             """() => {
@@ -314,7 +307,6 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any] | None:
         print(f"[Error] Skipped ({item['title']}): {e}", file=sys.stderr)
         return None
 
-    # নির্ধারিত সময়ের ভেতরে লিংক ক্যাপচার না হলে আউটপুটে দেওয়া হবে না (স্কিপ)
     if not result or not str(result.get("link") or "").strip():
         return None
 
