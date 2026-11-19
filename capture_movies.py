@@ -304,6 +304,7 @@ async def main():
     source_items = await asyncio.to_thread(load_source_movies, SOURCE_JSON_URL)
     existing_records = load_existing_output(OUTPUT_JSON_FILE)
 
+    # আউটপুট লিস্টে থাকা টাইটেল অনুযায়ী ইন্ডেক্স তৈরি (সম্পূর্ণ টাইটেল মিলিয়ে)
     existing_by_title: dict[str, int] = {}
     for idx, rec in enumerate(existing_records):
         t = str(rec.get("title") or "")
@@ -337,6 +338,7 @@ async def main():
         return
 
     semaphore = asyncio.Semaphore(CONCURRENCY)
+    updated_existing_indices: set[int] = set()
     new_records: list[dict[str, Any]] = []
 
     async with async_playwright() as p:
@@ -358,6 +360,7 @@ async def main():
                         existing_records[rec_idx]["link"] = rec["link"]
                         if rec["details"]:
                             existing_records[rec_idx]["details"] = rec["details"]
+                        updated_existing_indices.add(rec_idx)
                 else:
                     new_records.append(rec)
                 print(
@@ -373,10 +376,8 @@ async def main():
         )
         await browser.close()
 
+    # নতুন ক্যাপচার হওয়া রেকর্ডগুলো লিস্টের একদম শুরুতে রাখা হয়েছে
     final_records = new_records + existing_records
-    for idx, rec in enumerate(final_records, start=1):
-        rec["item_number"] = idx
-
     OUTPUT_JSON_FILE.write_text(
         json.dumps(final_records, indent=2, ensure_ascii=False),
         encoding="utf-8",
