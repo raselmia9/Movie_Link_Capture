@@ -113,6 +113,28 @@ def check_http_200(url: str, referer: str) -> bool:
     return False
 
 
+def extract_uploaded_date(text: str, fallback: str = "") -> str:
+    match = re.search(
+        r"\bUploaded\s*:\s*(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:am|pm))\b",
+        text or "",
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else fallback
+
+
+async def capture_item_date(context, item: dict[str, str]) -> str:
+    page = await context.new_page()
+    try:
+        await page.goto(item["detail_url"], wait_until="domcontentloaded", timeout=45000)
+        body_text = await page.locator("body").inner_text()
+        return extract_uploaded_date(body_text)
+    except Exception as e:
+        print(f"[Warning] Could not read upload date ({item['title']}): {e}", file=sys.stderr)
+        return ""
+    finally:
+        await page.close()
+
+
 def format_details_text(meta: dict[str, str]) -> str:
     lines = []
     for label in ("Director", "Cast(s)", "Language", "Quality", "Resolution", "Size"):
@@ -248,13 +270,7 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
                 extracted_labeled_raw.append((lbl, full_h))
 
         body_text = dom_data.get("text") or ""
-        uploaded_date = re.search(
-            r"\bUploaded\s*:\s*(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:am|pm))\b",
-            body_text,
-            re.IGNORECASE,
-        )
-        if uploaded_date:
-            date_val = uploaded_date.group(1).strip()
+        date_val = extract_uploaded_date(body_text, date_val)
 
         label_map = {
             "director": "Director",
@@ -304,6 +320,7 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
         "details": format_details_text(page_meta),
         "img": img_url,
         "date": date_val,
+        "date_source": "detail" if date_val else "",
         "link": format_links_field(labeled_entries),
     }
 
@@ -327,12 +344,13 @@ async def main():
         if title in existing_by_title:
             rec_idx = existing_by_title[title]
             existing_link = str(existing_records[rec_idx].get("link") or "").strip()
-            if existing_link == "":
-                to_capture.append((item, rec_idx))
-            else:
+            date_source = str(existing_records[rec_idx].get("date_source") or "").strip()
+            if existing_link and date_source == "detail":
                 skipped += 1
+            else:
+                to_capture.append((item, rec_idx, bool(existing_link)))
         else:
-            to_capture.append((item, None))
+            to_capture.append((item, None, False))
 
     if MAX_ITEMS > 0:
         to_capture = to_capture[:MAX_ITEMS]
@@ -360,28 +378,41 @@ async def main():
             ignore_https_errors=True,
         )
 
-        async def worker(index: int, item: dict[str, str], rec_idx: int | None):
+        async def worker(
+            index: int,
+            item: dict[str, str],
+            rec_idx: int | None,
+            date_only: bool,
+        ):
             async with semaphore:
-                rec = await capture_item(context, item)
-                if rec_idx is not None:
-                    if rec["date"]:
-                        existing_records[rec_idx]["date"] = rec["date"]
-                    if rec["link"]:
-                        existing_records[rec_idx]["link"] = rec["link"]
-                        if rec["details"]:
-                            existing_records[rec_idx]["details"] = rec["details"]
-                        updated_existing_indices.add(rec_idx)
+                if date_only:
+                    date_val = await capture_item_date(context, item)
+                    if rec_idx is not None and date_val:
+                        existing_records[rec_idx]["date"] = date_val
+                        existing_records[rec_idx]["date_source"] = "detail"
+                    title = item["title"]
+                    result = "DATE" if date_val else "DATE EMPTY"
                 else:
-                    new_records.append(rec)
-                print(
-                    f"[{index}/{len(to_capture)}] {rec['title']} -> "
-                    f"{'OK' if rec['link'] else 'EMPTY'}"
-                )
+                    rec = await capture_item(context, item)
+                    title = rec["title"]
+                    result = "OK" if rec["link"] else "EMPTY"
+                    if rec_idx is not None:
+                        if rec["date"]:
+                            existing_records[rec_idx]["date"] = rec["date"]
+                            existing_records[rec_idx]["date_source"] = "detail"
+                        if rec["link"]:
+                            existing_records[rec_idx]["link"] = rec["link"]
+                            if rec["details"]:
+                                existing_records[rec_idx]["details"] = rec["details"]
+                            updated_existing_indices.add(rec_idx)
+                    else:
+                        new_records.append(rec)
+                print(f"[{index}/{len(to_capture)}] {title} -> {result}")
 
         await asyncio.gather(
             *(
-                asyncio.create_task(worker(i + 1, it, r_idx))
-                for i, (it, r_idx) in enumerate(to_capture)
+                asyncio.create_task(worker(i + 1, it, r_idx, date_only))
+                for i, (it, r_idx, date_only) in enumerate(to_capture)
             )
         )
         await browser.close()
