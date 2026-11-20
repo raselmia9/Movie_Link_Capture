@@ -10,7 +10,7 @@ on:
       max_items:
         description: "Max new items per run (default 30 for test)"
         required: false
-        default: "300"
+        default: "900"
   schedule:
     - cron: "0 3 * * *"
 
