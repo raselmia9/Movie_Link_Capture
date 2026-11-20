@@ -248,6 +248,14 @@ async def capture_item(context, item: dict[str, str]) -> dict[str, Any]:
                 extracted_labeled_raw.append((lbl, full_h))
 
         body_text = dom_data.get("text") or ""
+        uploaded_date = re.search(
+            r"\bUploaded\s*:\s*(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:am|pm))\b",
+            body_text,
+            re.IGNORECASE,
+        )
+        if uploaded_date:
+            date_val = uploaded_date.group(1).strip()
+
         label_map = {
             "director": "Director",
             "cast": "Cast(s)",
@@ -356,6 +364,8 @@ async def main():
             async with semaphore:
                 rec = await capture_item(context, item)
                 if rec_idx is not None:
+                    if rec["date"]:
+                        existing_records[rec_idx]["date"] = rec["date"]
                     if rec["link"]:
                         existing_records[rec_idx]["link"] = rec["link"]
                         if rec["details"]:
