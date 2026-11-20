@@ -1,4 +1,4 @@
-name: Capture Movies & Stream Links (Test 30)
+name: Capture Movies & Stream Links (15900 item)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       max_items:
         description: "Max new items per run (default 30 for test)"
         required: false
-        default: "900"
+        default: "15900"
   schedule:
     - cron: "0 3 * * *"
 
