@@ -15,7 +15,7 @@ SOURCE_JSON_URL = os.getenv(
 )
 OUTPUT_JSON_FILE = Path(os.getenv("OUTPUT_JSON_FILE", "output_movies.json"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "60"))
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "300"))
+MAX_ITEMS = int(os.getenv("MAX_ITEMS", "900"))
 CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "false").lower() == "true"
 
 VIDEO_EXTENSIONS = (
