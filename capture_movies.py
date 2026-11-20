@@ -20,7 +20,7 @@ CHECK_STATUS_200 = os.getenv("CHECK_STATUS_200", "false").lower() == "true"
 
 VIDEO_EXTENSIONS = (
     "mp4", "mkv", "webm", "avi", "mov", "flv", "wmv", "m4v", "3gp", "3g2",
-    "m3u8", "m3u", "mpd", "ts", "m2ts", "mts", "m4s", "ism", "isml", "f4m", "f4v",
+    "m3u8", "mpd", "ts", "m2ts", "mts", "m4s", "ism", "isml", "f4m", "f4v",
     "mpg", "mpeg", "mpe", "mpv", "m2v", "vob", "ogv", "ogg", "rm", "rmvb",
     "asf", "amv", "divx", "xvid", "nsv", "yuv", "svi", "mxf", "roq", "drc", "gifv",
 )
